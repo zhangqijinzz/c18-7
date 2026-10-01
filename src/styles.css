@@ -14,6 +14,11 @@ button { cursor: pointer; }
 .topbar-right { gap: 22px; color: #89919d; font-size: 11px; }
 .save-state { gap: 8px; }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #36ae7b; display: inline-block; box-shadow: 0 0 0 3px #36ae7b1f; }
+.live-dot-off { background: #d27a3d; box-shadow: 0 0 0 3px #d27a3d1f; }
+.storage-notice { display: flex; align-items: center; gap: 12px; padding: 12px 48px; color: #8a5a22; background: #fdf3e3; border-bottom: 1px solid #f0dfc2; font-size: 11px; line-height: 1.5; }
+.storage-notice strong { display: block; color: #6f4718; font-size: 11px; }
+.storage-notice span:last-child { color: #9a713a; }
+.storage-notice-icon { flex: 0 0 auto; width: 22px; height: 22px; display: grid; place-items: center; color: #fff; background: #d27a3d; border-radius: 50%; font-weight: 800; font-size: 12px; }
 .avatar-small { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 50%; color: white; background: #24324a; font-size: 11px; font-weight: 700; }
 .workspace { max-width: 1580px; margin: 0 auto; padding: 34px 48px 70px; display: grid; grid-template-columns: 276px minmax(0, 1fr); gap: 54px; }
 .control-panel { position: sticky; top: 106px; align-self: start; }

@@ -1,15 +1,20 @@
 import { clampTokenValues, cloneTokens, contrastRatio, normalizeColor, themeTokens, validateTokens } from '../domain/brandRules'
 import type { BrandRepository } from '../repositories/brandRepository'
 import type { BrandGuidelinesExporter } from '../services/exportService'
+import { StorageAccessError } from '../services/storageService'
 import { INITIAL_TOKENS, type BrandDocument, type BrandMirrorSnapshot, type BrandTheme, type SavedVersion } from '../models/brandMirrorModels'
 
 type Listener = () => void
+
+const STORAGE_UNAVAILABLE_MESSAGE = '本地存储当前无法读取或写入，更改只保留在本页，请检查存储权限或空间'
+const EXPORT_FAILURE_MESSAGE = '导出失败，请稍后重试'
 
 export class BrandMirrorViewModel {
   private snapshot: BrandMirrorSnapshot = this.makeSnapshot({ tokens: INITIAL_TOKENS, theme: 'studio', versions: [] })
   private readonly listeners = new Set<Listener>()
   private readonly repository: BrandRepository
   private readonly exporter?: BrandGuidelinesExporter
+  private storageAvailable = true
 
   constructor(repository: BrandRepository, exporter?: BrandGuidelinesExporter) {
     this.repository = repository
@@ -26,11 +31,20 @@ export class BrandMirrorViewModel {
   }
 
   initialize(): void {
-    const stored = this.repository.load()
-    if (stored) {
-      this.snapshot = this.makeSnapshot(stored, '已恢复最近一次工作状态')
-    } else {
-      this.snapshot = this.makeSnapshot({ tokens: INITIAL_TOKENS, theme: 'studio', versions: [] }, '从 Studio warm 开始探索')
+    try {
+      const result = this.repository.load()
+      if (!result.ok) {
+        this.markStorageUnavailable()
+        this.snapshot = this.makeSnapshot({ tokens: INITIAL_TOKENS, theme: 'studio', versions: [] }, STORAGE_UNAVAILABLE_MESSAGE, 'error')
+      } else if (result.document) {
+        this.snapshot = this.makeSnapshot(result.document, '已恢复最近一次工作状态')
+      } else {
+        this.snapshot = this.makeSnapshot({ tokens: INITIAL_TOKENS, theme: 'studio', versions: [] }, '从 Studio warm 开始探索')
+      }
+    } catch {
+      // 任何初始化阶段的意外失败都不应白屏：退回默认令牌并提示
+      this.markStorageUnavailable()
+      this.snapshot = this.makeSnapshot({ tokens: INITIAL_TOKENS, theme: 'studio', versions: [] }, STORAGE_UNAVAILABLE_MESSAGE, 'error')
     }
     this.emit()
   }
@@ -61,6 +75,11 @@ export class BrandMirrorViewModel {
       this.emit()
       return
     }
+    if (!this.storageAvailable) {
+      this.snapshot = { ...this.snapshot, status: 'error', message: STORAGE_UNAVAILABLE_MESSAGE }
+      this.emit()
+      return
+    }
     const nextVersion: SavedVersion = {
       id: `version-${Date.now()}`,
       label: this.snapshot.versions.length === 0 ? 'Version A' : `Version ${String.fromCharCode(65 + this.snapshot.versions.length)}`,
@@ -82,7 +101,7 @@ export class BrandMirrorViewModel {
       this.exporter.export(this.snapshot)
       this.snapshot = { ...this.snapshot, message: '品牌规范已导出' }
     } catch {
-      this.snapshot = { ...this.snapshot, status: 'error', message: '导出失败，请稍后重试' }
+      this.snapshot = { ...this.snapshot, status: 'error', message: EXPORT_FAILURE_MESSAGE }
     }
     this.emit()
   }
@@ -94,28 +113,52 @@ export class BrandMirrorViewModel {
   }
 
   private persistCurrent(): void {
+    if (!this.storageAvailable) {
+      this.snapshot = { ...this.snapshot, status: 'error', message: STORAGE_UNAVAILABLE_MESSAGE }
+      this.emit()
+      return
+    }
     try {
       this.repository.save({ version: 1, tokens: this.snapshot.tokens, theme: this.snapshot.theme, versions: this.snapshot.versions })
-    } catch {
-      this.snapshot = { ...this.snapshot, status: 'error', message: '本地保存失败，但当前编辑仍保留在页面中' }
+    } catch (error) {
+      this.markStorageUnavailable()
+      this.snapshot = { ...this.snapshot, status: 'error', storageAvailable: false, message: this.toStorageFailureMessage(error) }
     }
     this.emit()
   }
 
   private persist(document: Omit<BrandDocument, 'version'>, message: string): void {
+    if (!this.storageAvailable) {
+      this.snapshot = { ...this.snapshot, status: 'error', message: STORAGE_UNAVAILABLE_MESSAGE }
+      this.emit()
+      return
+    }
     try {
       this.repository.save({ version: 1, ...document })
       this.snapshot = this.makeSnapshot(document, message, 'ready')
-    } catch {
-      this.snapshot = { ...this.snapshot, status: 'error', message: '版本保存失败，请稍后重试' }
+    } catch (error) {
+      this.markStorageUnavailable()
+      this.snapshot = { ...this.snapshot, status: 'error', storageAvailable: false, message: this.toStorageFailureMessage(error) }
     }
     this.emit()
+  }
+
+  private markStorageUnavailable(): void {
+    this.storageAvailable = false
+  }
+
+  private toStorageFailureMessage(error: unknown): string {
+    return error instanceof StorageAccessError
+      ? STORAGE_UNAVAILABLE_MESSAGE
+      : error instanceof Error && error.message
+        ? error.message
+        : STORAGE_UNAVAILABLE_MESSAGE
   }
 
   private makeSnapshot(document: Omit<BrandDocument, 'version'>, message = '', status: BrandMirrorSnapshot['status'] = 'ready'): BrandMirrorSnapshot {
     const ratio = contrastRatio(document.tokens.primary, document.tokens.secondary)
     const latestVersion = document.versions[document.versions.length - 1]
-    return { status, tokens: cloneTokens(document.tokens), theme: document.theme, versions: document.versions, compareMode: false, activeVersionId: latestVersion?.id ?? null, contrastRatio: ratio, contrastWarning: ratio < 3, message }
+    return { status, storageAvailable: this.storageAvailable, tokens: cloneTokens(document.tokens), theme: document.theme, versions: document.versions, compareMode: false, activeVersionId: latestVersion?.id ?? null, contrastRatio: ratio, contrastWarning: ratio < 3, message }
   }
 
   private emit(): void {
