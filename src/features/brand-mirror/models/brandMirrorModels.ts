@@ -25,6 +25,7 @@ export interface BrandDocument {
 
 export interface BrandMirrorSnapshot {
   status: MirrorStatus
+  storageAvailable: boolean
   tokens: BrandTokens
   theme: BrandTheme
   versions: SavedVersion[]

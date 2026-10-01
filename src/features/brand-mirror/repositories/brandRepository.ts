@@ -2,23 +2,31 @@ import type { BrandDocument } from '../models/brandMirrorModels'
 import { clampTokenValues, validateTokens } from '../domain/brandRules'
 import type { StorageService } from '../services/storageService'
 
+export type DocumentLoadResult =
+  | { status: 'unavailable' }
+  | { status: 'empty' }
+  | { status: 'ready'; document: BrandDocument }
+
 export interface BrandRepository {
-  load(): BrandDocument | null
+  load(): DocumentLoadResult
   save(document: BrandDocument): void
 }
 
 export class LocalBrandRepository implements BrandRepository {
   constructor(private readonly storage: StorageService) {}
 
-  load(): BrandDocument | null {
-    const raw = this.storage.read()
-    if (!raw) return null
+  load(): DocumentLoadResult {
+    const reading = this.storage.read()
+    if (!reading.ok) return { status: 'unavailable' }
+    const raw = reading.value
+    if (!raw) return { status: 'empty' }
     try {
       const candidate: unknown = JSON.parse(raw)
-      if (!isDocument(candidate)) return null
-      return { ...candidate, tokens: clampTokenValues(candidate.tokens) }
+      if (!isDocument(candidate)) return { status: 'empty' }
+      return { status: 'ready', document: { ...candidate, tokens: clampTokenValues(candidate.tokens) } }
     } catch {
-      return null
+      // 数据损坏时按无数据处理（默认令牌），不把损坏内容写回存储
+      return { status: 'empty' }
     }
   }
 

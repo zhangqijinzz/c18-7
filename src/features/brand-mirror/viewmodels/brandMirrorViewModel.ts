@@ -5,11 +5,14 @@ import { INITIAL_TOKENS, type BrandDocument, type BrandMirrorSnapshot, type Bran
 
 type Listener = () => void
 
+const STORAGE_UNAVAILABLE_MESSAGE = '本地存储当前不可用（已被浏览器禁用或空间已满），更改仅保留在本页面，刷新后会丢失'
+
 export class BrandMirrorViewModel {
   private snapshot: BrandMirrorSnapshot = this.makeSnapshot({ tokens: INITIAL_TOKENS, theme: 'studio', versions: [] })
   private readonly listeners = new Set<Listener>()
   private readonly repository: BrandRepository
   private readonly exporter?: BrandGuidelinesExporter
+  private storageAvailable = true
 
   constructor(repository: BrandRepository, exporter?: BrandGuidelinesExporter) {
     this.repository = repository
@@ -26,9 +29,17 @@ export class BrandMirrorViewModel {
   }
 
   initialize(): void {
-    const stored = this.repository.load()
-    if (stored) {
-      this.snapshot = this.makeSnapshot(stored, '已恢复最近一次工作状态')
+    const loaded = this.repository.load()
+    if (loaded.status === 'unavailable') {
+      // 读取失败（浏览器禁用存储/配额已满）：用默认令牌打开页面，且绝不回写，避免覆盖用户已有数据
+      this.storageAvailable = false
+      this.snapshot = this.makeSnapshot(
+        { tokens: INITIAL_TOKENS, theme: 'studio', versions: [] },
+        `无法读取本地数据，已使用默认令牌打开。${STORAGE_UNAVAILABLE_MESSAGE}`,
+        'error',
+      )
+    } else if (loaded.status === 'ready') {
+      this.snapshot = this.makeSnapshot(loaded.document, '已恢复最近一次工作状态')
     } else {
       this.snapshot = this.makeSnapshot({ tokens: INITIAL_TOKENS, theme: 'studio', versions: [] }, '从 Studio warm 开始探索')
     }
@@ -94,28 +105,45 @@ export class BrandMirrorViewModel {
   }
 
   private persistCurrent(): void {
+    if (!this.storageAvailable) {
+      this.snapshot = { ...this.snapshot, status: 'error', message: STORAGE_UNAVAILABLE_MESSAGE }
+      this.emit()
+      return
+    }
     try {
       this.repository.save({ version: 1, tokens: this.snapshot.tokens, theme: this.snapshot.theme, versions: this.snapshot.versions })
     } catch {
-      this.snapshot = { ...this.snapshot, status: 'error', message: '本地保存失败，但当前编辑仍保留在页面中' }
+      this.markStorageUnavailable()
     }
     this.emit()
   }
 
   private persist(document: Omit<BrandDocument, 'version'>, message: string): void {
+    if (!this.storageAvailable) {
+      // 存储不可用时不写入，但版本仍保留在当前页面会话中
+      this.snapshot = this.makeSnapshot(document, STORAGE_UNAVAILABLE_MESSAGE, 'error')
+      this.emit()
+      return
+    }
     try {
       this.repository.save({ version: 1, ...document })
       this.snapshot = this.makeSnapshot(document, message, 'ready')
     } catch {
-      this.snapshot = { ...this.snapshot, status: 'error', message: '版本保存失败，请稍后重试' }
+      this.markStorageUnavailable()
     }
     this.emit()
+  }
+
+  private markStorageUnavailable(): void {
+    // 一旦确认无法写入（配额已满等），本次会话内不再尝试写入，避免用默认值覆盖存储中可能已有的数据
+    this.storageAvailable = false
+    this.snapshot = { ...this.snapshot, status: 'error', storageAvailable: false, message: STORAGE_UNAVAILABLE_MESSAGE }
   }
 
   private makeSnapshot(document: Omit<BrandDocument, 'version'>, message = '', status: BrandMirrorSnapshot['status'] = 'ready'): BrandMirrorSnapshot {
     const ratio = contrastRatio(document.tokens.primary, document.tokens.secondary)
     const latestVersion = document.versions[document.versions.length - 1]
-    return { status, tokens: cloneTokens(document.tokens), theme: document.theme, versions: document.versions, compareMode: false, activeVersionId: latestVersion?.id ?? null, contrastRatio: ratio, contrastWarning: ratio < 3, message }
+    return { status, storageAvailable: this.storageAvailable, tokens: cloneTokens(document.tokens), theme: document.theme, versions: document.versions, compareMode: false, activeVersionId: latestVersion?.id ?? null, contrastRatio: ratio, contrastWarning: ratio < 3, message }
   }
 
   private emit(): void {

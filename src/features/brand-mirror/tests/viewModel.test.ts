@@ -1,19 +1,32 @@
 import { describe, expect, it } from 'vitest'
 import { BrandMirrorViewModel } from '../viewmodels/brandMirrorViewModel'
 import type { BrandDocument } from '../models/brandMirrorModels'
-import type { BrandRepository } from '../repositories/brandRepository'
+import type { BrandRepository, DocumentLoadResult } from '../repositories/brandRepository'
 import { buildBrandGuidelinesMarkdown, type BrandGuidelinesExporter } from '../services/exportService'
 
 class MemoryRepository implements BrandRepository {
   document: BrandDocument | null = null
   shouldFail = false
-  load(): BrandDocument | null { return this.document }
-  save(document: BrandDocument): void { if (this.shouldFail) throw new Error('offline'); this.document = document }
+  loadUnavailable = false
+  saveCalls = 0
+  load(): DocumentLoadResult {
+    if (this.loadUnavailable) return { status: 'unavailable' }
+    return this.document ? { status: 'ready', document: this.document } : { status: 'empty' }
+  }
+  save(document: BrandDocument): void {
+    this.saveCalls += 1
+    if (this.shouldFail) throw new Error('offline')
+    this.document = document
+  }
 }
 
 class MemoryExporter implements BrandGuidelinesExporter {
   received: string | null = null
-  export(snapshot: Parameters<BrandGuidelinesExporter['export']>[0]): void { this.received = buildBrandGuidelinesMarkdown(snapshot) }
+  shouldFail = false
+  export(snapshot: Parameters<BrandGuidelinesExporter['export']>[0]): void {
+    if (this.shouldFail) throw new Error('export blocked')
+    this.received = buildBrandGuidelinesMarkdown(snapshot)
+  }
 }
 
 describe('BrandMirrorViewModel', () => {
@@ -59,6 +72,61 @@ describe('BrandMirrorViewModel', () => {
     expect(viewModel.getSnapshot().message).toContain('恢复')
   })
 
+  it('opens with default tokens when local storage cannot be read', () => {
+    const repository = new MemoryRepository()
+    repository.loadUnavailable = true
+    const viewModel = new BrandMirrorViewModel(repository)
+    viewModel.initialize()
+    const snapshot = viewModel.getSnapshot()
+    expect(snapshot.tokens.primary).toBe('#F15A47')
+    expect(snapshot.storageAvailable).toBe(false)
+    expect(snapshot.status).toBe('error')
+    expect(snapshot.message).toContain('无法读取本地数据')
+  })
+
+  it('never writes back when initialization cannot read storage', () => {
+    const repository = new MemoryRepository()
+    repository.loadUnavailable = true
+    const viewModel = new BrandMirrorViewModel(repository)
+    viewModel.initialize()
+    viewModel.updateColor('primary', '#238B73')
+    viewModel.saveVersion()
+    expect(repository.saveCalls).toBe(0)
+    // 内存中的编辑仍然可用
+    expect(viewModel.getSnapshot().tokens.primary).toBe('#238B73')
+    expect(viewModel.getSnapshot().versions).toHaveLength(1)
+  })
+
+  it('stops attempting writes after a write fails and keeps edits in memory', () => {
+    const repository = new MemoryRepository()
+    const viewModel = new BrandMirrorViewModel(repository)
+    viewModel.initialize()
+    repository.shouldFail = true
+    viewModel.updateColor('secondary', '#24324A')
+    const attemptsAfterFirstFailure = repository.saveCalls
+    viewModel.updateColor('secondary', '#173C35')
+    viewModel.saveVersion()
+    expect(repository.saveCalls).toBe(attemptsAfterFirstFailure)
+    expect(viewModel.getSnapshot().storageAvailable).toBe(false)
+    expect(viewModel.getSnapshot().message).toContain('本地存储当前不可用')
+  })
+
+  it('reports the same storage-unavailable message on every write path', () => {
+    const repository = new MemoryRepository()
+    const viewModel = new BrandMirrorViewModel(repository)
+    viewModel.initialize()
+    repository.shouldFail = true
+
+    viewModel.updateColor('primary', '#238B73')
+    const editingMessage = viewModel.getSnapshot().message
+
+    viewModel.saveVersion()
+    const versionMessage = viewModel.getSnapshot().message
+
+    expect(versionMessage).toBe(editingMessage)
+    expect(versionMessage).toContain('刷新后会丢失')
+  })
+
   it('exports the current token system as brand guidelines', () => {
     const repository = new MemoryRepository()
     const exporter = new MemoryExporter()
@@ -68,5 +136,26 @@ describe('BrandMirrorViewModel', () => {
     expect(exporter.received).toContain('# BrandMirror 品牌规范')
     expect(exporter.received).toContain('`primary`')
     expect(viewModel.getSnapshot().message).toContain('导出')
+  })
+
+  it('still exports when storage is unavailable', () => {
+    const repository = new MemoryRepository()
+    repository.loadUnavailable = true
+    const exporter = new MemoryExporter()
+    const viewModel = new BrandMirrorViewModel(repository, exporter)
+    viewModel.initialize()
+    viewModel.exportBrandGuidelines()
+    expect(exporter.received).toContain('# BrandMirror 品牌规范')
+  })
+
+  it('surfaces an export failure with its own fallback message', () => {
+    const repository = new MemoryRepository()
+    const exporter = new MemoryExporter()
+    exporter.shouldFail = true
+    const viewModel = new BrandMirrorViewModel(repository, exporter)
+    viewModel.initialize()
+    viewModel.exportBrandGuidelines()
+    expect(viewModel.getSnapshot().status).toBe('error')
+    expect(viewModel.getSnapshot().message).toBe('导出失败，请稍后重试')
   })
 })
